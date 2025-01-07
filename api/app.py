@@ -20,8 +20,8 @@ USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36'
 ]
 
-# Custom aiohttp connector to limit requests per domain and total concurrent requests
-conn = aiohttp.TCPConnector(limit_per_host=5, limit=10)
+async def get_connector():
+    return aiohttp.TCPConnector(limit_per_host=5, limit=10)
 
 @app.get("/")
 async def health_check():
@@ -35,7 +35,8 @@ async def fetch_anime_data(query):
             'Accept-Language': 'en-US,en;q=0.5',
             'Referer': 'https://nimegami.id/'
         }
-        async with aiohttp.ClientSession(headers=headers, connector=conn) as session:
+        connector = await get_connector()
+        async with aiohttp.ClientSession(headers=headers, connector=connector) as session:
             async with session.get(url) as response:
                 response.raise_for_status()
                 content = await response.text()
@@ -84,7 +85,8 @@ async def fetch_anime_details(anime_url):
             'Accept-Language': 'en-US,en;q=0.5',
             'Referer': 'https://nimegami.id/'
         }
-        async with aiohttp.ClientSession(headers=headers, connector=conn) as session:
+        connector = await get_connector()
+        async with aiohttp.ClientSession(headers=headers, connector=connector) as session:
             async with session.get(anime_url) as response:
                 response.raise_for_status()
                 content = await response.text()
