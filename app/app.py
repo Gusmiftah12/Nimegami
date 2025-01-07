@@ -18,6 +18,10 @@ USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36'
 ]
 
+@app.route('/')
+def health_check():
+    return jsonify({"status": "ok"}), 200
+
 def fetch_anime_data(query):
     url = f"https://nimegami.id/?s={query}&post_type=post"
     try:
@@ -116,17 +120,9 @@ def fetch_basic_anime_info(soup):
 
         if key_element and value_element:
             key = key_element.text.strip().replace(':', '')
-            value = parse_table_value(key, value_element)
+            value = value_element.text.strip()
             details[key] = value
     return details
-
-def parse_table_value(key, value_element):
-    if key == 'Kategori':
-        return [a.text.strip() for a in value_element.find_all('a')]
-    elif key in ['Musim / Rilis', 'Type', 'Series']:
-        return value_element.find('a').text.strip()
-    else:
-        return value_element.text.strip()
 
 def fetch_synopsis(soup):
     synopsis_div = soup.find('div', itemprop='text', id='Sinopsis')
