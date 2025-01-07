@@ -120,9 +120,17 @@ def fetch_basic_anime_info(soup):
 
         if key_element and value_element:
             key = key_element.text.strip().replace(':', '')
-            value = value_element.text.strip()
+            value = parse_table_value(key, value_element)
             details[key] = value
     return details
+
+def parse_table_value(key, value_element):
+    if key == 'Kategori':
+        return [a.text.strip() for a in value_element.find_all('a')]
+    elif key in ['Musim / Rilis', 'Type', 'Series']:
+        return value_element.find('a').text.strip()
+    else:
+        return value_element.text.strip()
 
 def fetch_synopsis(soup):
     synopsis_div = soup.find('div', itemprop='text', id='Sinopsis')
@@ -219,4 +227,4 @@ def anime_details():
     return jsonify(details)
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=False)
