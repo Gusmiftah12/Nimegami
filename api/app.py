@@ -1,5 +1,7 @@
-from flask import Flask, request, jsonify
-import requests
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
+import aiohttp
+import asyncio
 from bs4 import BeautifulSoup
 import json
 import base64
@@ -7,7 +9,7 @@ import re
 import random
 import logging
 
-app = Flask(__name__)
+app = FastAPI()
 
 logging.basicConfig(level=logging.INFO)
 
@@ -18,100 +20,101 @@ USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36'
 ]
 
-@app.route('/')
-def health_check():
-    return jsonify({"status": "ok"}), 200
+# Custom aiohttp connector to limit requests per domain and total concurrent requests
+conn = aiohttp.TCPConnector(limit_per_host=5, limit=10)
 
-def fetch_anime_data(query):
+@app.get("/")
+async def health_check():
+    return JSONResponse(content={"status": "ok"}, status_code=200)
+
+async def fetch_anime_data(query):
     url = f"https://nimegami.id/?s={query}&post_type=post"
     try:
-        session = requests.Session()
         headers = {
             'User-Agent': random.choice(USER_AGENTS),
             'Accept-Language': 'en-US,en;q=0.5',
             'Referer': 'https://nimegami.id/'
         }
-        session.headers.update(headers)
-        response = session.get(url)
-        response.raise_for_status()
+        async with aiohttp.ClientSession(headers=headers, connector=conn) as session:
+            async with session.get(url) as response:
+                response.raise_for_status()
+                content = await response.text()
+                soup = BeautifulSoup(content, 'html.parser')
 
-        soup = BeautifulSoup(response.content, 'html.parser')
+                results = []
+                for article in soup.find_all('article'):
+                    title_element = article.find('h2', itemprop="name").find('a')
+                    title = title_element.text.strip() if title_element else "N/A"
+                    anime_url = title_element['href'] if title_element else "N/A"
 
-        results = []
-        for article in soup.find_all('article'):
-            title_element = article.find('h2', itemprop="name").find('a')
-            title = title_element.text.strip() if title_element else "N/A"
-            anime_url = title_element['href'] if title_element else "N/A"
+                    image_element = article.select_one('.thumbnail img')
+                    image = image_element['src'] if image_element else "No image available"
 
-            image_element = article.select_one('.thumbnail img')
-            image = image_element['src'] if image_element else "No image available"
+                    status_element = article.select_one('.term_tag-a a')
+                    status = status_element.text.strip() if status_element else "N/A"
 
-            status_element = article.select_one('.term_tag-a a')
-            status = status_element.text.strip() if status_element else "N/A"
+                    type_element = article.select_one('.terms_tag a')
+                    type = type_element.text.strip() if type_element else "N/A"
 
-            type_element = article.select_one('.terms_tag a')
-            type = type_element.text.strip() if type_element else "N/A"
+                    rating_element = article.select_one('.rating-archive i')
+                    rating = rating_element.next_sibling.strip() if rating_element else "N/A"
 
-            rating_element = article.select_one('.rating-archive i')
-            rating = rating_element.next_sibling.strip() if rating_element else "N/A"
+                    episodes_element = article.select_one('.eps-archive')
+                    episodes = episodes_element.text.strip() if episodes_element else "N/A"
 
-            episodes_element = article.select_one('.eps-archive')
-            episodes = episodes_element.text.strip() if episodes_element else "N/A"
+                    results.append({
+                        'title': title,
+                        'image': image,
+                        'status': status,
+                        'type': type,
+                        'rating': rating,
+                        'episodes': episodes,
+                        'anime_url': anime_url
+                    })
 
-            results.append({
-                'title': title,
-                'image': image,
-                'status': status,
-                'type': type,
-                'rating': rating,
-                'episodes': episodes,
-                'anime_url': anime_url
-            })
+                return results
 
-        return results
+    except aiohttp.ClientError as e:
+        raise HTTPException(status_code=500, detail=f"Network error: {e}")
 
-    except requests.exceptions.RequestException as e:
-        return {"error": f"Network error: {e}"}
-
-def fetch_anime_details(anime_url):
+async def fetch_anime_details(anime_url):
     try:
-        session = requests.Session()
         headers = {
             'User-Agent': random.choice(USER_AGENTS),
             'Accept-Language': 'en-US,en;q=0.5',
             'Referer': 'https://nimegami.id/'
         }
-        session.headers.update(headers)
-        response = session.get(anime_url)
-        response.raise_for_status()
+        async with aiohttp.ClientSession(headers=headers, connector=conn) as session:
+            async with session.get(anime_url) as response:
+                response.raise_for_status()
+                content = await response.text()
+                soup = BeautifulSoup(content, 'html.parser')
 
-        soup = BeautifulSoup(response.content, 'html.parser')
+                details = {}
 
-        details = {}
+                details.update(fetch_basic_anime_info(soup))
 
-        details.update(fetch_basic_anime_info(soup))
+                details['sinopsis'] = fetch_synopsis(soup)
 
-        details['sinopsis'] = fetch_synopsis(soup)
+                details['img'] = fetch_image_url(soup)
 
-        details['img'] = fetch_image_url(soup)
+                details['episodes'] = fetch_episode_info(soup)
 
-        details['episodes'] = fetch_episode_info(soup)
+                details['batch_downloads'] = fetch_batch_downloads(soup)
 
-        details['batch_downloads'] = fetch_batch_downloads(soup)
+                details['episode_downloads'] = fetch_episode_downloads(soup)
 
-        details['episode_downloads'] = fetch_episode_downloads(soup)
+                return details
 
-        return details
-
-    except requests.exceptions.RequestException as e:
+    except aiohttp.ClientError as e:
         logging.error(f"Network error: {e}")
-        return {"error": f"Network error: {e}"}
+        raise HTTPException(status_code=500, detail=f"Network error: {e}")
 
 def fetch_basic_anime_info(soup):
     details = {}
     info_div = soup.find('div', class_='info2')
     if not info_div:
-        return {"error": "Informasi anime tidak ditemukan."}
+        raise HTTPException(status_code=404, detail="Informasi anime tidak ditemukan.")
     
     table_rows = info_div.find('table').find_all('tr')
     for row in table_rows:
@@ -210,21 +213,20 @@ def fetch_episode_downloads(soup):
                         episode_downloads[episode_title][resolution][link_name] = link
     return episode_downloads
 
-@app.route('/search', methods=['GET'])
-def search_anime():
-    query = request.args.get('query')
+@app.get("/search")
+async def search_anime(query: str):
     if not query:
-        return jsonify({"error": "Query parameter is required"}), 400
-    results = fetch_anime_data(query)
-    return jsonify(results)
+        raise HTTPException(status_code=400, detail="Query parameter is required")
+    results = await fetch_anime_data(query)
+    return JSONResponse(content=results)
 
-@app.route('/details', methods=['GET'])
-def anime_details():
-    url = request.args.get('url')
+@app.get("/details")
+async def anime_details(url: str):
     if not url:
-        return jsonify({"error": "URL parameter is required"}), 400
-    details = fetch_anime_details(url)
-    return jsonify(details)
+        raise HTTPException(status_code=400, detail="URL parameter is required")
+    details = await fetch_anime_details(url)
+    return JSONResponse(content=details)
 
 if __name__ == '__main__':
-    app.run(debug=False)
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
