@@ -1,226 +1,111 @@
-from flask import Flask, request, jsonify
+from pyrogram import Client, filters
+from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 import requests
-from bs4 import BeautifulSoup
 import json
-import base64
-import re
 import random
-import logging
+import string
 
-app = Flask(__name__)
+API_ID = "961780"
+API_HASH = "bbbfa43f067e1e8e2fb41f334d32a6a7"
+BOT_TOKEN = "5219568853:AAGLyw56AsFYsGkCKP2Q3keZRgYB_JwKkTE"
 
-logging.basicConfig(level=logging.INFO)
+app = Client("anime_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-USER_AGENTS = [
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 6.1; WOW64; rv:43.0) Gecko/20100101 Firefox/43.0',
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36'
-]
+# In-memory storage for callback data
+callback_data_storage = {}
 
-def fetch_anime_data(query):
-    url = f"https://nimegami.id/?s={query}&post_type=post"
-    try:
-        session = requests.Session()
-        headers = {
-            'User-Agent': random.choice(USER_AGENTS),
-            'Accept-Language': 'en-US,en;q=0.5',
-            'Referer': 'https://nimegami.id/'
-        }
-        session.headers.update(headers)
-        response = session.get(url)
-        response.raise_for_status()
+def generate_callback_data():
+    return ''.join(random.choices(string.ascii_letters + string.digits, k=10))
 
-        soup = BeautifulSoup(response.content, 'html.parser')
+@app.on_message(filters.command("start"))
+def start(client, message):
+    message.reply_text("Welcome! Use /search <anime name> to find anime.")
 
-        results = []
-        for article in soup.find_all('article'):
-            title_element = article.find('h2', itemprop="name").find('a')
-            title = title_element.text.strip() if title_element else "N/A"
-            anime_url = title_element['href'] if title_element else "N/A"
-
-            image_element = article.select_one('.thumbnail img')
-            image = image_element['src'] if image_element else "No image available"
-
-            status_element = article.select_one('.term_tag-a a')
-            status = status_element.text.strip() if status_element else "N/A"
-
-            type_element = article.select_one('.terms_tag a')
-            type = type_element.text.strip() if type_element else "N/A"
-
-            rating_element = article.select_one('.rating-archive i')
-            rating = rating_element.next_sibling.strip() if rating_element else "N/A"
-
-            episodes_element = article.select_one('.eps-archive')
-            episodes = episodes_element.text.strip() if episodes_element else "N/A"
-
-            results.append({
-                'title': title,
-                'image': image,
-                'status': status,
-                'type': type,
-                'rating': rating,
-                'episodes': episodes,
-                'anime_url': anime_url
-            })
-
-        return results
-
-    except requests.exceptions.RequestException as e:
-        return {"error": f"Network error: {e}"}
-
-def fetch_anime_details(anime_url):
-    try:
-        session = requests.Session()
-        headers = {
-            'User-Agent': random.choice(USER_AGENTS),
-            'Accept-Language': 'en-US,en;q=0.5',
-            'Referer': 'https://nimegami.id/'
-        }
-        session.headers.update(headers)
-        response = session.get(anime_url)
-        response.raise_for_status()
-
-        soup = BeautifulSoup(response.content, 'html.parser')
-
-        details = {}
-
-        details.update(fetch_basic_anime_info(soup))
-
-        details['sinopsis'] = fetch_synopsis(soup)
-
-        details['img'] = fetch_image_url(soup)
-
-        details['episodes'] = fetch_episode_info(soup)
-
-        details['batch_downloads'] = fetch_batch_downloads(soup)
-
-        details['episode_downloads'] = fetch_episode_downloads(soup)
-
-        return details
-
-    except requests.exceptions.RequestException as e:
-        logging.error(f"Network error: {e}")
-        return {"error": f"Network error: {e}"}
-
-def fetch_basic_anime_info(soup):
-    details = {}
-    info_div = soup.find('div', class_='info2')
-    if not info_div:
-        return {"error": "Informasi anime tidak ditemukan."}
+@app.on_message(filters.command("search"))
+def search(client, message):
+    if len(message.command) < 2:
+        message.reply_text("Please provide an anime name to search.")
+        return
     
-    table_rows = info_div.find('table').find_all('tr')
-    for row in table_rows:
-        key_element = row.find('td', class_='tablex')
-        value_element = row.find_all('td')[1]
+    query = ' '.join(message.command[1:])
+    response = requests.get('https://academic-cal-booogd-ea0d3f67.koyeb.app/search', params={'query': query})
+    results = response.json()
+    
+    if not results:
+        message.reply_text("No results found.")
+        return
+    
+    keyboard = []
+    for result in results:
+        callback_data = generate_callback_data()
+        callback_data_storage[callback_data] = result['anime_url']
+        keyboard.append([InlineKeyboardButton(result['title'], callback_data=callback_data)])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    message.reply_text("Select an anime:", reply_markup=reply_markup)
 
-        if key_element and value_element:
-            key = key_element.text.strip().replace(':', '')
-            value = parse_table_value(key, value_element)
-            details[key] = value
-    return details
+@app.on_callback_query()
+def button(client, callback_query):
+    callback_data = callback_query.data
+    anime_url = callback_data_storage.get(callback_data)
+    
+    if not anime_url:
+        callback_query.answer("Invalid selection.", show_alert=True)
+        return
+    
+    response = requests.get('https://academic-cal-booogd-ea0d3f67.koyeb.app/details', params={'url': anime_url})
+    details = response.json()
+    
+    formatted_details = format_anime_details(details)
+    callback_query.message.edit_text(formatted_details)
 
-def parse_table_value(key, value_element):
-    if key == 'Kategori':
-        return [a.text.strip() for a in value_element.find_all('a')]
-    elif key in ['Musim / Rilis', 'Type', 'Series']:
-        return value_element.find('a').text.strip()
+def format_anime_details(details):
+    formatted = ""
+    
+    formatted += f"Title: {details.get('Judul ', 'N/A')}\n"
+    formatted += f"Alternative Title: {details.get('Judul Alternatif ', 'N/A')}\n"
+    formatted += f"Duration: {details.get('Durasi Per Episode ', 'N/A')}\n"
+    formatted += f"Rating: {details.get('Rating ', 'N/A')}\n"
+    formatted += f"Studio: {details.get('Studio ', 'N/A')}\n"
+    formatted += f"Categories: {details.get('Kategori ', 'N/A')}\n"
+    formatted += f"Season/Release: {details.get('Musim / Rilis ', 'N/A')}\n"
+    formatted += f"Type: {details.get('Type ', 'N/A')}\n"
+    formatted += f"Series: {details.get('Series ', 'N/A')}\n"
+    formatted += f"Subtitle: {details.get('Subtitle ', 'N/A')}\n"
+    formatted += f"Credit: {details.get('Credit ', 'N/A')}\n"
+    formatted += f"\nSynopsis: {details.get('sinopsis', 'N/A')}\n"
+    formatted += f"\nImage: {details.get('img', 'No image available')}\n"
+    
+    formatted += "\nEpisodes:\n"
+    if details.get('episodes'):
+        for episode in details['episodes']:
+            formatted += f"  - {episode['title']}\n"
+            for resolution, url in episode.get('streaming_urls', {}).items():
+                formatted += f"    {resolution}: {url}\n"
     else:
-        return value_element.text.strip()
+        formatted += "  No episodes available.\n"
 
-def fetch_synopsis(soup):
-    synopsis_div = soup.find('div', itemprop='text', id='Sinopsis')
-    if not synopsis_div:
-        return "Sinopsis tidak ditemukan."
-    
-    synopsis_paragraph = synopsis_div.find('p', recursive=False)
-    return synopsis_paragraph.text.strip() if synopsis_paragraph else ""
+    formatted += "\nBatch Downloads:\n"
+    if details.get('batch_downloads'):
+        for resolution, links in details['batch_downloads'].items():
+            formatted += f"  {resolution}:\n"
+            for link in links:
+                formatted += f"    {link}\n"
+    else:
+        formatted += "  No batch downloads available.\n"
 
-def fetch_image_url(soup):
-    image_element = soup.select_one('.thumbnail img')
-    return image_element['src'] if image_element else ""
+    formatted += "\nEpisode Downloads:\n"
+    if details.get('episode_downloads'):
+        for episode_title, resolutions in details['episode_downloads'].items():
+            formatted += f"  {episode_title}:\n"
+            for resolution, links in resolutions.items():
+                formatted += f"    {resolution}:\n"
+                for link_name, link in links.items():
+                    formatted += f"      {link_name}: {link}\n"
+    else:
+        formatted += "  No episode downloads available.\n"
 
-def fetch_episode_info(soup):
-    episode_list = soup.select('.list_eps_stream li')
-    episodes = []
-    for episode_item in episode_list:
-        episode_title = episode_item.get('title', '')
-        episode_id = episode_item.get('id')
-        episode_title = parse_episode_title(episode_id, episode_title)
+    return formatted
 
-        episode_data = json.loads(base64.b64decode(episode_item['data']).decode('utf-8'))
-        streaming_urls = parse_streaming_urls(episode_data)
-
-        episodes.append({
-            'title': episode_title,
-            'streaming_urls': streaming_urls,
-            'id': episode_id
-        })
-    return episodes
-
-def parse_episode_title(episode_id, default_title):
-    episode_map = {
-        "play_eps_1": "Episode 1",
-        "play_eps_2": "Episode 2",
-        "play_eps_3": "Episode 3"
-    }
-    return episode_map.get(episode_id, default_title)
-
-def parse_streaming_urls(episode_data):
-    streaming_urls = {}
-    for data_dict in episode_data:
-        if 'format' in data_dict:
-            format_key = data_dict['format']
-            if 'url' in data_dict and data_dict['url']:
-                streaming_urls[format_key] = data_dict['url'][0]
-    return streaming_urls
-
-def fetch_batch_downloads(soup):
-    download_box = soup.find('div', class_='download_box')
-    batch_downloads = {}
-    if download_box:
-        batch_list = download_box.find('ul')
-        if batch_list:
-            for li in batch_list.find_all('li'):
-                resolution, links = li.text.split(' ', 1)
-                batch_downloads[resolution] = [a['href'] for a in li.find_all('a')]
-    return batch_downloads
-
-def fetch_episode_downloads(soup):
-    episode_downloads = {}
-    for h4 in soup.find_all('h4'):
-        episode_title = h4.text.strip()
-        download_list = h4.find_next_sibling('ul')
-        if download_list:
-            episode_downloads[episode_title] = {}
-            for a_tag in download_list.find_all('a'):
-                title = a_tag.get('title')
-                if title:
-                    resolution_match = re.search(r'(\d+p)', title)
-                    if resolution_match:
-                        resolution = resolution_match.group(1)
-                        link_name = a_tag.text.strip()
-                        link = a_tag['href']
-                        if resolution not in episode_downloads[episode_title]:
-                            episode_downloads[episode_title][resolution] = {}
-                        episode_downloads[episode_title][resolution][link_name] = link
-    return episode_downloads
-
-@app.route('/search', methods=['GET'])
-def search_anime():
-    query = request.args.get('query')
-    if not query:
-        return jsonify({"error": "Query parameter is required"}), 400
-    results = fetch_anime_data(query)
-    return jsonify(results)
-
-@app.route('/details', methods=['GET'])
-def anime_details():
-    url = request.args.get('url')
-    if not url:
-        return jsonify({"error": "URL parameter is required"}), 400
-    details = fetch_anime_details(url)
-    return jsonify(details)
-
-if __name__ == '__main__':
-    app.run(debug=True)
+if __name__ == "__main__":
+    app.run()
